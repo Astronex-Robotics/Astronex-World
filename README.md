@@ -169,3 +169,8 @@ work, long rollouts hold their scene, and inference is real time on a single NVI
 block by block with cross-block KV caching and few-step UniPC sampling.
 
 <!-- Citation: add the technical-report BibTeX entry here once the preprint is posted. -->
+
+## License
+
+Released under the Apache License, Version 2.0 — see [LICENSE](LICENSE). Copyright 2026 Astronex Robotics. The released
+model weights are distributed under the same licence.
