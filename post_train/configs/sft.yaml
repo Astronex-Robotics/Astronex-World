@@ -1,0 +1,127 @@
+backbone_variant: wan2.2
+sharding_strategy: full
+mixed_precision: true
+seed: 0
+gradient_checkpointing: true
+denoising_loss_type: flow
+num_train_timestep: 1000
+timestep_shift: 5.0
+warp_denoising_step: true
+ts_schedule: false
+generator_fsdp_wrap_strategy: size
+real_score_fsdp_wrap_strategy: size
+fake_score_fsdp_wrap_strategy: size
+text_encoder_fsdp_wrap_strategy: size
+text_encoder_cpu_offload: true
+text_encoder_fsdp: false
+generator_cpu_offload: false
+real_score_cpu_offload: false
+fake_score_cpu_offload: false
+fsdp_backward_prefetch: post
+wandb_host: https://api.wandb.ai
+wandb_key: <your_wandb_key>
+wandb_entity: <your_wandb_entity>
+wandb_project: wan22_sft_phys
+negative_prompt: 色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走
+image_or_video_shape:
+- 1
+- 20
+- 48
+- 30
+- 52
+num_training_frames: 20
+num_frame_per_block: 4
+num_gradient_frames: 4
+min_generated_blocks: 1
+load_raw_video: false
+data_path: ./dataset/sft_phys
+use_camera: true
+use_action: true
+i2v: true
+trainer: camera_diffusion
+causal: true
+distribution_loss: dmd
+denoising_step_list:
+- 1000
+- 750
+- 500
+- 250
+generator_ckpt: ./logs/merged/online_unipc25_to12_step20_full.pt
+ckpt_step: 0
+real_ckpt: ./logs/wan22_camera_restore/checkpoint_model_002200/model.pt
+fake_ckpt: ./logs/wan22_camera_restore/checkpoint_model_002200/model.pt
+real_name: Wan2.2-TI2V-5B
+fake_name: Wan2.2-TI2V-5B
+guidance_scale: 3.0
+real_guidance_scale: 3.0
+fake_guidance_scale: 0.0
+dfake_gen_update_ratio: 1
+min_score_timestep: 20
+lr: 2.0e-06
+camera_lr: 1.0e-06
+action_lr: 2.0e-05
+lr_critic: 1.0e-06
+beta1: 0.0
+beta2: 0.999
+beta1_critic: 0.0
+beta2_critic: 0.999
+weight_decay: 0.0
+batch_size: 1
+grad_accum_steps: 32
+total_batch_size: 64
+ema_weight: 0.99
+ema_start_step: 200
+max_grad_norm_generator: 10.0
+max_grad_norm_critic: 10.0
+max_step: 500
+log_iters: 1
+save_iters: 25
+console_log_every: 1
+save_trainable_only: true
+num_workers: 4
+no_visualize: true
+model_kwargs:
+  model_name: Wan2.2-TI2V-5B
+  model_root: ckpts/Wan22
+  timestep_shift: 5.0
+  local_attn_size: 20
+  sink_size: 4
+  use_camera: true
+  use_action: true
+  action_dim: 64
+  action_output: true
+  num_embodiments: 32
+  prope_scale: 1.0
+  prope_chunk_anchor: true
+  prope_num_layers: 30
+  moba_bidirectional_ratio: 0.25
+  lora:
+    rank: 64
+    alpha: 128
+    train_control_params:
+    - camera
+    - action
+error_recycling:
+  enabled: true
+  boundary_loss_weight: 0.1
+  luma_loss_weight: 0.02
+  context_inject_prob: 0.0
+  latent_inject_prob: 0.0
+  noise_inject_prob: 0.0
+teacher_forcing: true
+noise_augmentation_max_timestep: 0
+ref_cond_prob: 0.7
+scheduled_sampling: true
+kv_window_frames: 20
+ss_context_noise: 0
+motion_anchor_weight: 0.0
+scene_motion_weight: 0.5
+action_loss_weight: 0.5
+action_output_input_dropout: 1.0
+self_forcing_spatial_gradient_weight: 0.5
+self_forcing_foreground_weight: 0.2
+rolling_forcing: true
+rolling_forcing_prob: 1.0
+self_forcing_luma_delta_weight: 0.3
+self_forcing_luma_velocity_weight: 0.0
+logdir: logs/astronex_sft

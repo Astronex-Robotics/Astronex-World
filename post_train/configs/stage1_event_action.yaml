@@ -1,0 +1,77 @@
+backbone_variant: wan2.2
+sharding_strategy: full
+mixed_precision: true
+seed: 0
+gradient_checkpointing: true
+denoising_loss_type: flow
+num_train_timestep: 1000
+timestep_shift: 5.0
+warp_denoising_step: true
+ts_schedule: false
+generator_fsdp_wrap_strategy: size
+text_encoder_fsdp_wrap_strategy: size
+text_encoder_cpu_offload: true
+wandb_host: https://api.wandb.ai
+wandb_key: <your_wandb_key>
+wandb_entity: <your_wandb_entity>
+negative_prompt: 色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走
+image_or_video_shape:
+- 1
+- 20
+- 48
+- 30
+- 52
+num_training_frames: 20
+num_frame_per_block: 4
+load_raw_video: false
+data_path: ./dataset/sft_phys
+use_camera: true
+use_action: true
+use_event: true
+event_guidance: false
+separate_event_encoder: false
+action_output_input_dropout: 1.0
+action_loss_weight: 1.0
+trainer: camera_diffusion
+causal: true
+teacher_forcing: true
+guidance_scale: 8.0
+noise_augmentation_max_timestep: 0
+generator_ckpt: ./logs/merged/stage1ar500_sft100_lora_full.pt
+ckpt_step: 0
+num_workers: 2
+lr: 2.0e-05
+beta1: 0.0
+beta2: 0.999
+batch_size: 1
+grad_accum_steps: 16
+total_batch_size: 16
+ema_weight: 0.99
+ema_start_step: 2000000000
+max_step: 100
+log_iters: 10
+save_iters: 25
+console_log_every: 5
+save_trainable_only: true
+wandb_project: wan22_stage1_event_action_head
+model_kwargs:
+  model_name: Wan2.2-TI2V-5B
+  model_root: ckpts/Wan22
+  timestep_shift: 5.0
+  local_attn_size: 20
+  use_camera: true
+  use_action: true
+  use_event: true
+  event_num_layers: 12
+  action_output: true
+  action_dim: 64
+  num_embodiments: 32
+  lora:
+    rank: 64
+    alpha: 128
+    train_control_params:
+    - action
+    - event
+    - action_out
+text_encoder_fsdp: false
+logdir: logs/astronex_stage1

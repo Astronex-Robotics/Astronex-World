@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# generated at run time
+outputs/
+logs/
+wandb/
+
+# weights are published separately (huggingface.co/Astronex-Lab/Astronex-World)
+*.safetensors
+*.pt
+*.pth
+*.ckpt

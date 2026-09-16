@@ -1,0 +1,23 @@
+backbone_variant: wan2.2
+causal: false
+use_camera: true
+use_action: false
+num_train_timestep: 1000
+timestep_shift: 5.0
+warp_denoising_step: true
+guidance_scale: 8.0
+negative_prompt: 色调艳丽，过曝，静态，细节模糊不清，字幕，低质量，静止不动的画面
+image_or_video_shape:
+- 1
+- 20
+- 48
+- 30
+- 52
+num_frame_per_block: 4
+model_kwargs:
+  model_name: Wan2.2-TI2V-5B
+  model_root: ckpts/Wan22
+  timestep_shift: 5.0
+  use_camera: true
+  use_action: false
+sampling_steps: 50
