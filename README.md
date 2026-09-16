@@ -61,13 +61,12 @@ Both run the same 5B backbone. They differ in what attention can see, and everyt
 | guidance | 3.0 | 8.0 |
 | length | extendable indefinitely, block by block | fixed at the window |
 | driveable while running | yes | no |
-| action control | yes | no — this branch has no action pathway |
+| action control | yes | yes |
 | weights | `../Astronex` | `../Astronex` (the same files; `--weights` overrides) |
 
-Both forms sample the same checkpoint directory. The causal checkpoint carries 892 tensors against the 885 full
-attention needs — the extra seven are the action pathway, which the bidirectional config leaves unused
-(`use_action: false`) — so full-attention sampling loads it strictly with no missing weights. Pass `--weights <dir>` to
-sample from somewhere else.
+Both forms sample the same checkpoint directory. The checkpoint carries 892 tensors, seven of which are the action
+pathway, and both configs enable it (`use_action: true`), so either form loads it strictly with no missing weights.
+Pass `--weights <dir>` to sample from somewhere else.
 
 The causal form is the distilled student; the bidirectional form keeps the teacher's full motion.
 **Causal for interaction and length, bidirectional when the motion has to be exact.**
@@ -155,7 +154,7 @@ failure modes worth reading before changing anything.
 
 ## Benchmarks
 
-WBench (official evaluation code, default VLM judge) and VBench 1.0, both with the 8-step causal release:
+WBench (official evaluation code, default VLM judge) and VBench 1.0 (a partial run of the official suites, generated in suite order), both with the 8-step causal release:
 
 | Benchmark | Setting | Score |
 |---|---|---|
@@ -164,7 +163,7 @@ WBench (official evaluation code, default VLM judge) and VBench 1.0, both with t
 | VBench 1.0 | Text-to-video, 240 videos | motion smoothness 0.990, temporal flickering 0.987, imaging 0.715 |
 | VBench 1.0 | Image-to-video, 15 videos | I2V background 0.997, temporal flickering 0.995, background consistency 0.985 |
 
-Astronex-World holds the highest Average among the published WBench entries on both splits. Camera and action control
+Scores are from our own run with the official WBench code and have been submitted to the leaderboard. Camera and action control
 work, long rollouts hold their scene, and inference is real time on a single NVIDIA L20 48 GB: the causal form streams
 block by block with cross-block KV caching and few-step UniPC sampling.
 
