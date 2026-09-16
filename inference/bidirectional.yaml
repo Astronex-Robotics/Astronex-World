@@ -1,7 +1,7 @@
 backbone_variant: wan2.2
 causal: false
 use_camera: true
-use_action: false
+use_action: true
 num_train_timestep: 1000
 timestep_shift: 5.0
 warp_denoising_step: true
@@ -19,5 +19,7 @@ model_kwargs:
   model_root: ckpts/Wan22
   timestep_shift: 5.0
   use_camera: true
-  use_action: false
+  use_action: true
+  action_dim: 64
+  num_embodiments: 32
 sampling_steps: 50
