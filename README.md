@@ -33,7 +33,7 @@ More clips — action-controlled driving, night roads, snow ridges and a 33-seco
 [project page](https://world.astronex.com.cn/).
 
 ```
-inference/generate.py        causal or bidirectional generation, with events
+inference/generate.py        text-to-video or image-to-video, causal or bidirectional, with events
 inference/sample.py          the sampling loop behind generate.py
 inference/pipelines/         causal and bidirectional samplers
 inference/*.yaml             causal: 8 steps, window 20, sink 4 / bidirectional: 50 steps
@@ -100,30 +100,42 @@ with no missing weights. Pass `--weights <dir>` to sample from somewhere else.
 The causal form is the distilled student; the bidirectional form keeps the teacher's full motion.
 **Causal for interaction and length, bidirectional when the motion has to be exact.**
 
+Text-to-video needs no reference image; image-to-video adds `--image`. Both use the same weights and sampler.
+
 ```bash
-# causal, driven forward
+# text-to-video, causal
+python inference/generate.py --mode causal \
+  --prompt "A wooden sailing ship on a stormy sea at dusk." \
+  --trajectory 'w*24' --out outputs/ship_t2v
+
+# text-to-video, bidirectional
+python inference/generate.py --mode bidirectional \
+  --prompt "A wooden sailing ship on a stormy sea at dusk." \
+  --frames 17 --out outputs/ship_t2v_bidir
+
+# image-to-video, causal, driven forward
 python inference/generate.py --mode causal \
   --prompt "A wooden sailing ship on a stormy sea at dusk." \
   --image media/examples/case_203.jpg \
   --trajectory 'w*23' --out outputs/pirate
 
-# bidirectional, same prompt
+# image-to-video, bidirectional
 python inference/generate.py --mode bidirectional \
   --prompt "A wooden sailing ship on a stormy sea at dusk." \
   --image media/examples/case_203.jpg \
   --frames 17 --out outputs/pirate_bidir
 ```
 
-Omit `--image` for text-to-video. `--trajectory` is a per-frame camera stream (`w` forward, `s` back, `a`/`d` strafe,
+`--trajectory` is a per-frame camera stream (`w` forward, `s` back, `a`/`d` strafe,
 `h` hold; `w*12,a*11` turns partway through) whose length must equal the frame count — it defaults to holding still.
 
 Two settings are worth respecting:
 
 - **8 causal steps** is the validated setting. The sampler also accepts 4 steps for latency experiments; quality is
   lower and every number reported below uses 8.
-- **Frames come in whole blocks.** The causal pipeline generates in blocks of 8 and i2v spends one frame on the
-  reference, so `1 + frames` divides by 8: 23, not 20. `generate.py` snaps and says so rather than failing three
-  minutes into loading.
+- **Frames come in whole blocks.** The causal pipeline generates in blocks of 8. Image-to-video spends one frame on
+  the reference, so `1 + frames` divides by 8 — 23, not 20 — while text-to-video wants a plain multiple of 8, so 24.
+  `generate.py` snaps and says so rather than failing three minutes into loading.
 
 ## Consumer cards
 
