@@ -1,11 +1,17 @@
 # Astronex-World
 
-Inference, evaluation and post-training for **Astronex-World-5B**: a real-time interactive video world model for
-autonomous driving and embodied intelligence, with camera, action, event and text control on a Wan2.2-TI2V-5B
-backbone. 832x480 and 1280x704 at 24 fps.
+Inference and post-training for **Astronex-World 1.0**, a 5B controllable video world-model foundation on the
+Wan2.2-TI2V-5B prior. Given a text prompt or a first frame it predicts future visual states under frame-aligned camera
+trajectories, a 64-D continuous action stream with an embodiment identifier, and text events inserted partway through a
+rollout. One trunk, two forms: *bidirectional* with full temporal attention, and *causal* with block-causal attention
+and cross-block KV caching that streams 832x480 at 24 fps in real time on a single NVIDIA L20 48 GB. A 1280x704 preset
+uses the same weights.
+
+All five training stages ran on two L20 48 GB GPUs. On WBench Full 289 the causal release scores 70.0, above the 13.6B
+LongCat-Video and the 14B Helios, and within one point of the 22B LTX-2.3.
 
 [Project page](https://world.astronex.com.cn/) &nbsp;|&nbsp;
-[Code](https://github.com/Astronex-Robotics/Astronex-World) &nbsp;|&nbsp;
+[Technical report](https://world.astronex.com.cn/assets/paper/astronex-world-technical-report.pdf) &nbsp;|&nbsp;
 [Weights](https://huggingface.co/Astronex-Lab/Astronex-World)
 
 The weights live next door in `../Astronex`; this is the code that runs them and continues training them.
@@ -28,27 +34,50 @@ More clips — action-controlled driving, night roads, snow ridges and a 33-seco
 
 ```
 inference/generate.py        causal or bidirectional generation, with events
-inference/causal.yaml        8 steps, window 20, sink 4, retrieval on
-inference/bidirectional.yaml 50 steps, full-sequence attention
-post_train/train.py          --recipe sft | dmd, single or multi node
-post_train/configs/          sft.yaml, dmd.yaml
-post_train/README.md         the objective, the memory budget, two silent traps
-wan/check_components.py      verify the VAE and text encoder are where they go
-wan/README.md                what Astronex replaces and what it reuses
+inference/sample.py          the sampling loop behind generate.py
+inference/pipelines/         causal and bidirectional samplers
+inference/*.yaml             causal: 8 steps, window 20, sink 4 / bidirectional: 50 steps
+inference/causal_consumer.yaml  same output inside 24 GB, for consumer cards
+models/                      the Wan2.2 DiT with camera (PRoPE), action and event grafts; VAE / UMT5 wrappers; LoRA
+post_train/train.py          --recipe camera | action | sft
+post_train/trainer/          the camera_diffusion trainer and its control-channel plumbing
+post_train/objectives/       the flow-matching objective and the action-prediction loss
+post_train/data/             LMDB latent datasets
+post_train/configs/          camera.yaml, action.yaml, sft.yaml
+utils/                       distributed / sequence parallel, checkpoint loading, camera trajectories
+scripts/check_weights.py     verify the released directory has everything the model loads
 scripts/                     runnable examples of everything above
-astronex_env.py              locates the minWM tree and the released weights
+astronex_env.py              locates the released weights
+requirements.txt             pinned Python dependencies
 ```
 
-`astronex_env.py` expects the minWM checkout as a sibling directory; point `MINWM_ROOT` elsewhere if it is not. Start
-here:
+The repository is self-contained: nothing is imported from outside it, and everything the model loads — denoiser,
+module definition, VAE, text encoder — comes from the one released weights directory:
 
 ```bash
-python wan/check_components.py
+pip install -r requirements.txt
+huggingface-cli download Astronex-Lab/Astronex-World --local-dir ../Astronex
+python scripts/check_weights.py        # denoiser, transformer/config.json, vae/, text_encoder/, tokenizer/
 ```
 
-The release is the denoiser only. The Wan2.2 VAE and the UMT5 text encoder come from minWM's `ckpts/` and are not
-duplicated — and they resolve from a *different* directory than the backbone config, which `wan/README.md` explains
-because it is the one bit of the layout that reliably wastes an afternoon.
+It defaults to `../Astronex`; set `ASTRONEX_WEIGHTS` or pass `--weights` if it is elsewhere. Scripts take
+`PYTHON=/path/to/python` when the environment is not the default interpreter.
+
+## The model
+
+| | |
+|---|---|
+| Parameters | 5,351,000,000, bf16 |
+| Backbone | Wan2.2-TI2V-5B, 30 DiT layers, hidden 3072, 24 heads, FFN 14,336 |
+| Latent | 48 channels; VAE 4x temporal, 16x16 spatial |
+| Conditioning | text, first frame, camera intrinsics/extrinsics (PRoPE in all 30 layers), 64-D continuous action + 32 embodiment IDs, event text |
+| Causal context | 20 latent frames plus 4 persistent sink frames, 8 latent frames per block |
+| Sampler | UniPC, 8 steps, CFG 3.0 (4 steps is supported and visibly lower quality) |
+| Output | 832x480 and 1280x704 at 24 fps; benchmarks use 832x480 |
+| Hardware | trained on 2x L20 48 GB, streams in real time on 1x L20 48 GB |
+
+Camera matrices enter self-attention through PRoPE; the text enters through cross-attention; the 64-D action vector and
+its embodiment ID are mapped by an MLP into the scale, shift and gate modulation that also carries the timestep.
 
 ## Two inference modes
 
@@ -64,9 +93,9 @@ Both run the same 5B backbone. They differ in what attention can see, and everyt
 | action control | yes | yes |
 | weights | `../Astronex` | `../Astronex` (the same files; `--weights` overrides) |
 
-Both forms sample the same checkpoint directory. The checkpoint carries 892 tensors, seven of which are the action
-pathway, and both configs enable it (`use_action: true`), so either form loads it strictly with no missing weights.
-Pass `--weights <dir>` to sample from somewhere else.
+Both forms sample the same checkpoint directory. It carries 898 tensors: the 825 of the Wan2.2 backbone, the camera
+(PRoPE) and action grafts, and the six of the action head. Both configs set `use_action: true`, so either form loads it
+with no missing weights. Pass `--weights <dir>` to sample from somewhere else.
 
 The causal form is the distilled student; the bidirectional form keeps the teacher's full motion.
 **Causal for interaction and length, bidirectional when the motion has to be exact.**
@@ -75,14 +104,14 @@ The causal form is the distilled student; the bidirectional form keeps the teach
 # causal, driven forward
 python inference/generate.py --mode causal \
   --prompt "A wooden sailing ship on a stormy sea at dusk." \
-  --image ../minWM/data/wbench/images/case_203.jpg \
+  --image media/examples/case_203.jpg \
   --trajectory 'w*23' --out outputs/pirate
 
 # bidirectional, same prompt
 python inference/generate.py --mode bidirectional \
   --prompt "A wooden sailing ship on a stormy sea at dusk." \
-  --image ../minWM/data/wbench/images/case_203.jpg \
-  --frames 20 --out outputs/pirate_bidir
+  --image media/examples/case_203.jpg \
+  --frames 17 --out outputs/pirate_bidir
 ```
 
 Omit `--image` for text-to-video. `--trajectory` is a per-frame camera stream (`w` forward, `s` back, `a`/`d` strafe,
@@ -95,6 +124,29 @@ Two settings are worth respecting:
 - **Frames come in whole blocks.** The causal pipeline generates in blocks of 8 and i2v spends one frame on the
   reference, so `1 + frames` divides by 8: 23, not 20. `generate.py` snaps and says so rather than failing three
   minutes into loading.
+
+## Consumer cards
+
+`causal.yaml` peaks at 37.9 GB, which wants a 40 GB+ card. `causal_consumer.yaml` is the same weights, sampler and
+output — bit-identical on both a 23-frame and a 47-frame rollout — with the peak moved off the VAE decode, where the
+denoiser's KV caches used to sit resident while the whole clip went through the VAE:
+
+```bash
+bash scripts/infer_causal_consumer.sh
+python inference/generate.py --mode causal --config inference/causal_consumer.yaml --prompt "..." --image ...
+```
+
+| | peak | |
+|---|---|---|
+| `causal.yaml` | 37.9 GB | 40 GB+ card |
+| `causal.yaml`, card under 40 GB | 27.3 GB | UMT5 swaps in per module, automatic |
+| `causal_consumer.yaml` | 23.2 GB | comfortable on a 32 GB RTX 5090; fits a 24 GB card with little else on it |
+
+The peak does not grow with the rollout: 23 and 47 latent frames measure the same, because the causal window is fixed.
+Below about 24 GB the KV caches themselves stop fitting.
+
+`--vram-limit-gb 32` caps the process so a larger card behaves like a smaller one — an allocation past the cap raises
+OOM exactly as it would on the real card. That is how the numbers above were measured, on an L20.
 
 ## Events
 
@@ -122,52 +174,135 @@ obvious:
 
 `action_output` is public in this release: enabling it attaches a `LayerNorm -> Linear -> SiLU -> Linear` head that
 mean-pools the spatial tokens of each latent frame and predicts a 64-D action vector, giving `(B, F, 64)`. The output
-layer is zero-initialised, so inserting the head leaves the video model unchanged, and `stage1` above is the recipe that
-trains it — `camera_diffusion.py` is the only trainer carrying the action-prediction loss, and asking for it under DMD
-is refused rather than silently left without a gradient.
+layer is zero-initialised, so inserting the head leaves the video model unchanged, and the `action` recipe below is
+what trains it.
 
-That makes the model usable as an inverse-dynamics readout: predicted states to actions, alongside actions to predicted
-states. Embodiment-specific adapters connect the generic 64-D interface to joints, end effectors, grippers or a mobile
-base.
+The head ships zero-initialised and therefore untrained: reading actions from it returns zeros until the `action`
+recipe has trained it. Once trained it is an inverse-dynamics readout — predicted states to actions, alongside actions to predicted
+states — and doubles as a probe, since a head that recovers the action from generated frames is direct evidence that the
+action conditioning is steering the rollout.
+
+This is the interface the report reserves for downstream work (Section 8.7). For autonomous driving, ego trajectory,
+steering, speed and throttle/brake are written into the 64-D action stream and event prompts insert traffic events at
+chosen times. For embodied intelligence, robot trajectories post-train the head as an action-sequence decoder, with
+adapters mapping the generic 64-D interface to joints, end effectors, grippers or a mobile base.
 
 ## Post-training
 
-Four recipes, one per stage this model was actually built through. Which control pathways train is a property of the
-stage rather than a free choice — each config is a copy of one that ran here.
+The release came out of five stages, all on two L20 48 GB GPUs (Section 6 of the report): **I** bidirectional control
+adaptation, which adds PRoPE camera control and the 64-D action stream to the Wan2.2 prior and produces the
+bidirectional release; **II** block-causal conversion by teacher forcing; **III** online UniPC trajectory distillation,
+25-step teacher to 12-step student; **IV** mixed-domain causal SFT on Control2V, CrossFPS, DrivingDojo and PhysicalAI,
+which restores subject motion; **V** asymmetric DMD/DMD2 with a motion-preservation term, the Stage I model acting as
+the real score, producing the causal release.
 
-| recipe | trainer | trains |
+This repository ships the recipes that continue from the release on your own data — the control-adaptation objective of
+Stages I and IV. The distillation stages that produced the released checkpoint (II, III, V) are described in the report
+but are not part of this code release, so post-training here refines control rather than retraining the released
+picture quality.
+
+Three recipes, all on the `camera_diffusion` trainer. Which control pathways train is a property of the recipe rather
+than a free choice.
+
+| recipe | trains | |
 |---|---|---|
-| `stage0` | `camera_bidirectional_diffusion` | adapters + every graft (this produces the teacher) |
-| `stage1` | `camera_diffusion` | action, event, action_out |
-| `sft` | `camera_diffusion` | camera, action |
-| `dmd` | `camera_score_distillation` | adapters only (this produces the streaming release) |
+| `camera` | camera (PRoPE) | the action pathway is left where the release left it |
+| `action` | action in, action out | the camera pathway is left alone |
+| `sft` | camera, action | both together |
 
 ```bash
-python post_train/train.py --recipe sft --gpus 2 --trainchk
-python post_train/train.py --recipe dmd --gpus 2 --trainchk
+bash scripts/post_train_camera.sh --data <lmdb dir>
+bash scripts/post_train_action.sh --data <lmdb dir>
+bash scripts/post_train_sft.sh    --data <lmdb dir>
 ```
 
-Each starts from the released weights with a fresh adapter, so step 0 reproduces the release. NCCL is the backend;
-`--nnodes`/`--node-rank`/`--master-addr` extend it across hosts and `--sp-size` shards the sequence.
-`post_train/README.md` has the objective term by term, the memory budget, the multi-node invocation, and two silent
-failure modes worth reading before changing anything.
+`camera` and `action` each move one pathway and leave the other alone, which is what makes "did this corpus change
+camera control?" answerable. Only `action` trains the action head; the recipes that do not train it also do not install
+it, because a frozen zero-initialised head returns zeros and has no gradient to give.
+
+Both start from the released weights with a fresh LoRA adapter, so step 0 reproduces the release, and the backbone stays
+frozen. NCCL is the backend; `--nnodes`/`--node-rank`/`--master-addr` extend it across hosts and `--sp-size` shards the
+sequence. `post_train/README.md` has the memory budget, the multi-node invocation, and two silent failure modes worth
+reading before changing anything.
 
 ## Benchmarks
 
-WBench (official evaluation code, default VLM judge) and VBench 1.0 (a partial run of the official suites, generated in suite order), both with the 8-step causal release:
+WBench (289 cases, 1,058 interaction rounds, official evaluation code, default VLM judge), 8-step causal release. Each
+case is generated as one continuous sequence rather than restarted as i2v after every round.
 
-| Benchmark | Setting | Score |
+| Split | Average | Quality | Setting | Interaction | Consistency | Physical |
+|---|---|---|---|---|---|---|
+| Navi 158 | **73.5** | 78.2 | 73.5 | 63.4 | 83.6 | 68.6 |
+| Full 289 | **70.0** | 78.3 | 73.8 | 47.6 | 82.4 | 68.1 |
+
+Navi 158 measures navigation only. Full 289 adds event editing, subject action and perspective switching, which is
+where Interaction drops — the text-switch event interface is the model's weakest axis, and the report says so.
+
+Against the open models on the WBench leaderboard (snapshot of 13 September 2026; peer scores from the leaderboard,
+Astronex-World evaluated by us with the official code). † is post-trained from a Wan prior:
+
+| Model | Params | Training GPUs | Avg. | Qual. | Set. | Inter. | Cons. | Phys. |
+|---|---|---|---|---|---|---|---|---|
+| Kairos 3.0 | 4B | n/r | 65.7 | 73.1 | 70.3 | 41.6 | 83.2 | 60.5 |
+| YUME 1.5† | 5B | NVIDIA A100 | 68.9 | 77.6 | 72.4 | 48.4 | 80.9 | 65.4 |
+| **Astronex-World 1.0†** | **5B** | **2x L20 48 GB** | **70.0** | **78.3** | 73.8 | 47.6 | 82.4 | 68.1 |
+| HY-Video 1.5 | 8.3B | n/r | 74.3 | 76.6 | 85.6 | 54.7 | 87.5 | 67.1 |
+| LongCat-Video | 13.6B | n/r | 69.9 | 77.2 | 72.3 | 45.1 | 86.6 | 68.4 |
+| Helios (distilled)† | 14B | 64-128x H100 | 69.7 | 73.3 | 75.3 | 41.6 | 82.2 | 76.1 |
+| LTX-2.3 | 22B | n/r | 70.9 | 77.0 | 85.2 | 49.4 | 78.0 | 65.1 |
+
+HY-Video 1.5 (8.3B) is ahead. What the table is for is the cost axis: among 5B-class models this one is above YUME 1.5,
+post-trained from the same Wan2.2 prior on A100s, and it is above LongCat-Video and Helios with a third or less of their
+parameters — Helios uses 64 to 128 H100s per stage. Quality 78.3 is the highest in the table.
+
+VBench 1.0, scored with the official code on the official prompt order, no sampling or selection. This is a *partial*
+run: 240 of 6,220 text-to-video and 118 of 5,590 image-to-video videos had been generated and scored at the time of the
+report (125 frames, 832x480, 24 fps, 8-step UniPC).
+
+| Dimension | Text-to-video | Image-to-video |
 |---|---|---|
-| WBench | Navi 158 average | **73.5** (Quality 78.2 / Setting 73.5 / Interaction 63.4 / Consistency 83.6 / Physical 68.6) |
-| WBench | Full 289 average | **70.0** (Quality 78.3 / Setting 73.8 / Interaction 47.6 / Consistency 82.4 / Physical 68.1) |
-| VBench 1.0 | Text-to-video, 240 videos | motion smoothness 0.990, temporal flickering 0.987, imaging 0.715 |
-| VBench 1.0 | Image-to-video, 15 videos | I2V background 0.997, temporal flickering 0.995, background consistency 0.985 |
+| Imaging quality | 0.715 | 0.738 |
+| Aesthetic quality | 0.508 | 0.473 |
+| Motion smoothness | 0.990 | — |
+| Temporal flickering | 0.987 | 0.995 |
+| Dynamic degree | 0.254 | — |
+| Overall consistency | 0.220 | — |
+| Background consistency | — | 0.985 |
+| I2V background | — | 0.997 |
+| Camera motion | — | 0.485 |
 
-Scores are from our own run with the official WBench code and have been submitted to the leaderboard. Camera and action control
-work, long rollouts hold their scene, and inference is real time on a single NVIDIA L20 48 GB: the causal form streams
-block by block with cross-block KV caching and few-step UniPC sampling.
+Smoothness, flicker and background preservation are high; the low dynamic degree is the motion suppression that DMD
+distillation introduces, measured directly on an internal basketball sequence as subject residual amplitude: 88.8 px
+bidirectional, 36.1 px after mixed-domain SFT, 16.6 px for the released DMD checkpoint. The motion-preservation term
+keeps rollouts from freezing without restoring the teacher's amplitude. That is why both forms ship — **causal for
+interaction and length, bidirectional when the motion has to be exact.**
 
-<!-- Citation: add the technical-report BibTeX entry here once the preprint is posted. -->
+## Limitations
+
+From the report, unchanged here:
+
+1. **Weak complex interaction.** Training emphasises continuous camera and action streams. Event editing, subject
+   action and perspective switching go through a text-switch interface that cannot express several independent timed
+   events.
+2. **Long-horizon drift remains.** Four sink frames and the local window delay forgetting, but strong turns, loops and
+   low-light scenes still show colour shift, darkening, structural repainting and detail loss.
+3. **Distillation suppresses motion.** See the amplitudes above.
+4. **Limited physical fidelity.** No explicit physical state, depth, collision constraints or 3D scene representation —
+   video coherence is not proof of accurate physics.
+5. **Action post-training required.** The 64-D action stream and the `(F, 64)` action output are reserved interfaces;
+   driving and robot control spaces are connected through post-training on domain data.
+
+## Citation
+
+```bibtex
+@techreport{astronexworld2026,
+  title  = {Astronex-World 1.0: Real-Time Interactive World Model Foundation},
+  author = {Zhou, Xin and Miao, Cong},
+  year   = {2026},
+  institution = {Astronex Robotics},
+  url    = {https://world.astronex.com.cn/assets/paper/astronex-world-technical-report.pdf}
+}
+```
 
 ## License
 

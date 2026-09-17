@@ -12,3 +12,6 @@ wandb/
 *.pt
 *.pth
 *.ckpt
+
+# local component checkouts, if ASTRONEX_CKPTS is pointed here
+ckpts/

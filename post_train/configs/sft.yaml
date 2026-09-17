@@ -9,14 +9,10 @@ timestep_shift: 5.0
 warp_denoising_step: true
 ts_schedule: false
 generator_fsdp_wrap_strategy: size
-real_score_fsdp_wrap_strategy: size
-fake_score_fsdp_wrap_strategy: size
 text_encoder_fsdp_wrap_strategy: size
 text_encoder_cpu_offload: true
 text_encoder_fsdp: false
 generator_cpu_offload: false
-real_score_cpu_offload: false
-fake_score_cpu_offload: false
 fsdp_backward_prefetch: post
 wandb_host: https://api.wandb.ai
 wandb_key: <your_wandb_key>
@@ -40,31 +36,19 @@ use_action: true
 i2v: true
 trainer: camera_diffusion
 causal: true
-distribution_loss: dmd
 denoising_step_list:
 - 1000
 - 750
 - 500
 - 250
-generator_ckpt: ./logs/merged/online_unipc25_to12_step20_full.pt
+generator_ckpt: '@weights'
 ckpt_step: 0
-real_ckpt: ./logs/wan22_camera_restore/checkpoint_model_002200/model.pt
-fake_ckpt: ./logs/wan22_camera_restore/checkpoint_model_002200/model.pt
-real_name: Wan2.2-TI2V-5B
-fake_name: Wan2.2-TI2V-5B
 guidance_scale: 3.0
-real_guidance_scale: 3.0
-fake_guidance_scale: 0.0
-dfake_gen_update_ratio: 1
-min_score_timestep: 20
 lr: 2.0e-06
 camera_lr: 1.0e-06
 action_lr: 2.0e-05
-lr_critic: 1.0e-06
 beta1: 0.0
 beta2: 0.999
-beta1_critic: 0.0
-beta2_critic: 0.999
 weight_decay: 0.0
 batch_size: 1
 grad_accum_steps: 32
@@ -72,7 +56,6 @@ total_batch_size: 64
 ema_weight: 0.99
 ema_start_step: 200
 max_grad_norm_generator: 10.0
-max_grad_norm_critic: 10.0
 max_step: 500
 log_iters: 1
 save_iters: 25
@@ -81,15 +64,15 @@ save_trainable_only: true
 num_workers: 4
 no_visualize: true
 model_kwargs:
-  model_name: Wan2.2-TI2V-5B
-  model_root: ckpts/Wan22
+  model_name: transformer
+  model_root: '@weights'
   timestep_shift: 5.0
   local_attn_size: 20
   sink_size: 4
   use_camera: true
   use_action: true
   action_dim: 64
-  action_output: true
+  action_output: false
   num_embodiments: 32
   prope_scale: 1.0
   prope_chunk_anchor: true
@@ -116,8 +99,6 @@ kv_window_frames: 20
 ss_context_noise: 0
 motion_anchor_weight: 0.0
 scene_motion_weight: 0.5
-action_loss_weight: 0.5
-action_output_input_dropout: 1.0
 self_forcing_spatial_gradient_weight: 0.5
 self_forcing_foreground_weight: 0.2
 rolling_forcing: true

@@ -1,3 +1,16 @@
+# Causal sampling on a consumer card. Same weights, same sampler, same output
+# as `causal.yaml` -- verified bit-identical on the 23-frame and 47-frame
+# rollouts -- with the memory peak moved off the VAE decode.
+#
+# Measured peak, 832x480, with the process capped at that size (see
+# `generate.py --vram-limit-gb`):
+#
+#   causal.yaml           37.9 GB   needs a 40 GB+ card
+#   causal.yaml @ 32 GB   27.3 GB   UMT5 swaps in per module, automatic below 40 GB
+#   this config           23.2 GB   23 and 47 latent frames alike
+#
+# So: comfortable on a 32 GB RTX 5090, and it fits a 24 GB card if little else
+# is on it. Below ~24 GB the KV caches themselves no longer fit.
 backbone_variant: wan2.2
 causal: true
 use_camera: true
@@ -49,3 +62,13 @@ retrieval_window: true
 retrieval_recent_frames: 4
 retrieval_min_overlap: 0.3
 retrieval_swap_per_block: 2
+
+# The decode used to be the peak: the denoiser's KV caches were still resident
+# while the whole clip went through the VAE. They are dropped first and the
+# next rollout re-initialises them, so nothing is carried over anyway.
+free_cache_before_decode: true
+
+# Also move the denoiser to the host for the decode. Not needed at 24 GB --
+# the peak is in sampling by then -- and it costs a 10 GB round trip per
+# prompt, so it is off; turn it on if a longer clip hits the decode again.
+offload_denoiser_for_decode: false

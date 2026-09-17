@@ -9,5 +9,5 @@ PY=${PYTHON:-$(command -v python3 || command -v python)}
 cd "$(dirname "$0")/.."
 exec "$PY" inference/generate.py --mode bidirectional \
   --prompt "A wooden sailing ship on a stormy sea at dusk, rain lashing the deck." \
-  --image ../minWM/data/wbench/images/case_203.jpg \
+  --image media/examples/case_203.jpg \
   --out outputs/bidir_pirate "$@"

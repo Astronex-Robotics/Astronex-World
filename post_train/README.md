@@ -1,85 +1,58 @@
 # Post-training
 
 ```bash
-python post_train/train.py --recipe sft --gpus 2      # supervised fine-tuning
-python post_train/train.py --recipe dmd --gpus 2      # distribution matching
+bash scripts/post_train_camera.sh --data <lmdb dir>   # camera only
+bash scripts/post_train_action.sh --data <lmdb dir>   # action in and out only
+bash scripts/post_train_sft.sh    --data <lmdb dir>   # both together
 ```
 
-Both start from the released weights with a freshly initialised adapter, so
-step 0 reproduces the release exactly — `lora_b` is zero, which makes the
-adapter an identity at the start.
+All three run the `camera_diffusion` trainer: flow matching on the dataset's
+latents, teacher-forced. All start from the released weights with a freshly
+initialised adapter, so step 0 reproduces the release exactly — `lora_b` is
+zero, which makes the adapter an identity at the start — and the backbone
+stays frozen.
 
 ## Which recipe
 
-| | sft | dmd |
-|---|---|---|
-| trainer | `camera_diffusion` | `camera_score_distillation` |
-| objective | flow matching on the dataset's latents | `fake_score − real_score` |
-| networks on the card | student | student + one shared score backbone |
-| few-step sampling | no | yes, this is what buys it |
-| ball bounce reached | 36.1 px (41% of teacher) | 16.6–21.2 px (19–24%) |
-| lr | 2e-6, action 2e-5 | 1e-6, critic 1e-6 |
+| | camera | action | sft |
+|---|---|---|---|
+| camera (PRoPE) | trains | — | trains |
+| action input | — | trains | trains |
+| action head | — | trains | — |
+| lr | 2e-6, camera 1e-6 | 2e-6, action 2e-5 | 2e-6, camera 1e-6, action 2e-5 |
 
-**SFT is the better tool for picture quality and for a new corpus**, and it is
-cheaper and steadier. It is also, measurably, much better at physics — 41% of
-the teacher against DMD's 19–24%. What it cannot do is make the model samplable
-in eight steps; that is what DMD is for, and the physics loss is the price.
+**camera** and **action** each move one pathway and leave the other where the
+release left it. That is what makes a question like "did this corpus change
+camera control?" answerable: the pathway that was not trained is bit-identical,
+not merely similar.
 
-## What is in the DMD objective
+**sft** trains both together and refines control on a new corpus; it reached
+36.1 px of ball bounce against the teacher's 88.8, the best physics of any
+student here.
 
-Four terms, each answering something an earlier round got wrong:
-
-- **DMD** — the distribution supervision. Teacher score fixed, critic score
-  tracking the student, gradient from the difference. Not a per-pixel loss: a
-  sample can be right in distribution and still look noisy, which is why the
-  other three exist.
-- **`motion_preserve_weight: 2.0`** — matches the student's mean temporal
-  difference to the clip's own. Worth 10% → 19% of teacher bounce on its own.
-  The target comes from the batch, so it asks for the motion the clip actually
-  has rather than a fixed amount.
-- **`rolling_forcing_prob: 1.0`** — staggers the noise level across the window
-  so later frames denoise from noisier states, which is the regime a long
-  rollout actually runs in. Every step, not half of them: drift shows up in the
-  tail, which is exactly what the ramp trains against.
-- **GAN** — `gan_weight: 0.05`, a 14M pooled discriminator head on the critic
-  reading blocks 13/21/29. Against the high-frequency noise the DMD term
-  tolerates. `gan_max_timestep: 250` keeps it near the clean end: at high noise
-  the injected noise dominates and the discriminator would be judging what it
-  was handed rather than the sample's own texture.
-
-### Reading the GAN in the log
-
-```
-gan_d_loss=1.221  d_real=0.072  d_fake=-0.279     healthy
-gan_d_loss=1.386  d_real=0.005  d_fake=0.004      learning nothing
-```
-
-1.386 is 2·ln 2 — chance exactly. Pinned there with `d_real` and `d_fake` equal
-means the discriminator cannot separate real from generated, and the
-generator's adversarial term is spending two forward passes a step pushing
-against nothing. That happened here from applying `lr_critic` (1e-6, sized for
-adapters continuing a long fine-tune) to a randomly initialised head, which is
-why the head has its own `gan_lr: 3e-5`.
-
-If the discriminator instead runs away — `d_loss` collapsing toward zero —
-lower `gan_weight` before touching anything else.
+The action head is trained only by `action`, through `_action_output_loss` in
+`post_train/objectives/camera_diffusion.py`. The other two do not install it at
+all (`action_output: false`): the head ships
+zero-initialised, so frozen it returns zeros and its loss has no gradient to
+give, and the six head tensors in the checkpoint are dropped on load with a log
+line saying so.
 
 ## Distributed
 
 NCCL is the backend. Single node needs nothing:
 
 ```bash
-python post_train/train.py --recipe dmd --gpus 2
+python post_train/train.py --recipe sft --gpus 2
 ```
 
 Across hosts, each node runs the same command with its own rank:
 
 ```bash
 # node 0
-python post_train/train.py --recipe dmd --gpus 8 \
+python post_train/train.py --recipe sft --gpus 8 \
   --nnodes 2 --node-rank 0 --master-addr 10.0.0.1 --port 30401
 # node 1
-python post_train/train.py --recipe dmd --gpus 8 \
+python post_train/train.py --recipe sft --gpus 8 \
   --nnodes 2 --node-rank 1 --master-addr 10.0.0.1 --port 30401
 ```
 
@@ -95,27 +68,20 @@ it changes the data sampler, so a run cannot be resumed across a change in it.
 
 ## Memory
 
-Two 44 GB cards: ~15 GiB resident, ~39 GiB peak in the critic phase for DMD.
-Three settings buy that room and all three are on in `configs/dmd.yaml`:
+Two 44 GB cards. A single 44 GB card runs out of memory in the first backward
+pass: FSDP needs the second rank to shard the trainable state.
 
-- **`share_score_backbone`** — teacher and critic are two adapters over one
-  network, the teacher reading it with the adapter switched off. `real_ckpt`
-  and `fake_ckpt` already name the same file, and the critic is re-initialised
-  from `fake_ckpt` on every launch (`save()` writes only the generator), so
-  nothing is lost. The second 5.36B backbone was duplication.
-- **`split_dtype_fsdp`** — frozen backbone in bf16, fp32 adapters handed to
-  FSDP as `ignored_states` so every flattened unit stays dtype-uniform.
-  Numerically a no-op for the compute, which already ran bf16 under
-  `mixed_precision`; it only stops keeping fp32 masters for parameters that
-  never update. Their gradients are all-reduced by hand, since FSDP reduces
-  only what it shards.
 - **`text_encoder_cpu_offload`** — UMT5 is frozen and embeds one short prompt a
   step. 10.6 GiB of resident VRAM for that is the least useful allocation on
   the card.
+- **`split_dtype_fsdp`** must stay off whenever a control graft trains: the
+  grafts are plain `nn.Linear` with no dtype boundary of their own, and
+  casting them to bf16 would round lr-sized updates away. `train.py` refuses
+  the combination.
 
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is set by the launcher.
-Fragmentation, not capacity, is what this run kept dying on: 84 MiB short with
-745 MiB reserved and unallocated.
+Fragmentation, not capacity, is what these runs kept dying on: 84 MiB short
+with 745 MiB reserved and unallocated.
 
 `--memlog` prints resident and peak memory per phase, which is the first thing
 to look at on different hardware.
@@ -153,7 +119,7 @@ print(sum(1 for k in a if not torch.equal(a[k], b[k])), "of", len(a), "changed")
 
 ## Data
 
-`data_path: ./dataset/sft_phys` — LMDB shards of latents with camera poses,
+`data_path: ./dataset/sft_phys` (relative to this repo; `--data <dir>` overrides) — LMDB shards of latents with camera poses,
 actions and embodiment ids.
 
 One caution worth more than it looks: a corpus whose `camera_extrinsics` are

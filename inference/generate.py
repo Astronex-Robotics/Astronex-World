@@ -16,8 +16,8 @@ Pick causal for interaction and length, bidirectional for a fixed-length clip
 where motion has to be right.
 
 This is a thin front end: it resolves the released weights and the mode's
-config and hands both to minWM's `wan_inference.py`, which is where the
-sampling loop, the retrieval window and the decoding live.
+config and hands both to `inference/sample.py`, which is where the sampling
+loop, the retrieval window and the decoding live.
 """
 
 import argparse
@@ -46,8 +46,8 @@ def main():
                          "still for the whole clip; its length has to equal "
                          "the frame count")
     ap.add_argument("--frames", type=int, default=None,
-                    help="latent frames to generate (default: 20 causal, "
-                         "17 bidirectional -- its window)")
+                    help="latent frames to generate (default: 23 causal, "
+                         "17 bidirectional)")
     ap.add_argument("--out", default="outputs/astronex")
     ap.add_argument("--steps", type=int, default=None,
                     help="override the sampler steps. 8 causal / 50 "
@@ -55,23 +55,37 @@ def main():
                          "degrades visibly")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--fps", type=int, default=24)
+    ap.add_argument("--config", default=None,
+                    help="sampling config; defaults to inference/<mode>.yaml. "
+                         "inference/causal_consumer.yaml fits a 32 GB card")
     ap.add_argument("--gpu", default="0")
+    ap.add_argument("--vram-limit-gb", type=float, default=None,
+                    help="cap this process's VRAM, e.g. 32 to behave like an "
+                         "RTX 5090 on a larger card")
     ap.add_argument("--weights", default=None,
                     help="weights directory to sample from. Defaults to the "
-                         "released directory for the mode: ../Astronex for "
-                         "causal, ../Astronex/bidirectional for "
-                         "bidirectional. Pass the causal directory here to "
-                         "run the released streaming weights under "
-                         "full-attention sampling.")
+                         "released directory (../Astronex, or "
+                         "ASTRONEX_WEIGHTS), shared by both modes")
     ap.add_argument("--event-prompt", default=None,
                     help="second caption, swapped in mid-rollout")
     ap.add_argument("--event-start-frame", type=int, default=None)
     args, passthrough = ap.parse_known_args()
+    # Resolve paths against the caller's directory before setup() chdirs.
+    args.out = os.path.abspath(args.out)
+    if args.config:
+        args.config = os.path.abspath(args.config)
+    if args.image:
+        args.image = os.path.abspath(args.image)
+    if os.path.exists(args.prompt):
+        args.prompt = os.path.abspath(args.prompt)
 
     root = astronex_env.setup()
     weights = os.path.abspath(args.weights) if args.weights else \
         astronex_env.weights(args.mode)
-    config = os.path.join(HERE, f"{args.mode}.yaml")
+    out_dir = args.out
+    config = astronex_env.resolve_config(
+        args.config or os.path.join(HERE, f"{args.mode}.yaml"),
+        os.path.join(out_dir, f"_astronex_{args.mode}.yaml"), weights_dir=weights)
     frames = args.frames if args.frames is not None else (
         23 if args.mode == "causal" else 17)
 
@@ -103,22 +117,18 @@ def main():
 
     # A prompt on the command line still has to reach the loader as a file;
     # the dataset it reads is line-oriented. Write it into this run's output
-    # directory rather than one shared path: a read-only minWM checkout would
-    # otherwise break the run, and two concurrent runs would overwrite each
-    # other's prompt.
+    # directory so two concurrent runs do not overwrite each other's prompt.
     prompt_path = args.prompt
     if not os.path.exists(prompt_path):
-        out_dir = args.out if os.path.isabs(args.out) else os.path.join(root, args.out)
-        os.makedirs(out_dir, exist_ok=True)
         prompt_path = os.path.join(out_dir, "_astronex_prompt.txt")
         with open(prompt_path, "w") as f:
             f.write(args.prompt.rstrip("\n") + "\n")
 
-    cmd = [sys.executable, "Wan21/wan_inference.py",
+    cmd = [sys.executable, "-m", "inference.sample",
            "--config_path", config,
            "--checkpoint_path", weights,
            "--data_path", prompt_path,
-           "--output_folder", args.out,
+           "--output_folder", out_dir,
            "--num_output_frames", str(frames),
            "--trajectory", trajectory,
            "--seed", str(args.seed),
@@ -133,12 +143,10 @@ def main():
         cmd += ["--event_start_frame", str(args.event_start_frame)]
     cmd += passthrough
 
-    env = dict(os.environ)
+    env = astronex_env.child_env(weights)
     env["CUDA_VISIBLE_DEVICES"] = args.gpu
-    env["PYTHONPATH"] = os.pathsep.join(
-        [os.path.join(root, "Wan21"), os.path.join(root, "shared"),
-         env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    if args.vram_limit_gb:
+        env["ASTRONEX_VRAM_LIMIT_GB"] = str(args.vram_limit_gb)
 
     print(f"[astronex] {args.mode} | weights {weights}")
     print("[astronex] " + " ".join(cmd), flush=True)

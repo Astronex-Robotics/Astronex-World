@@ -9,6 +9,6 @@ PY=${PYTHON:-$(command -v python3 || command -v python)}
 cd "$(dirname "$0")/.."
 exec "$PY" inference/generate.py --mode causal \
   --prompt "A wooden sailing ship on a stormy sea at dusk, rain lashing the deck." \
-  --image ../minWM/data/wbench/images/case_203.jpg \
+  --image media/examples/case_203.jpg \
   --trajectory 'w*23' \
   --out outputs/causal_pirate "$@"

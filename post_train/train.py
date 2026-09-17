@@ -1,44 +1,30 @@
-"""Post-train Astronex-World, following the staging this model was built with.
+"""Post-train Astronex-World.
 
-Four recipes, each a copy of a config that actually ran here, with the resume
+Two recipes, each a copy of a config that actually ran here, with the resume
 fields reset so it starts from the release rather than mid-run. Which control
 pathways train is a property of the stage, not a free choice -- that is what
-`train_control_params` in each config says, and combinations outside these four
-were never validated here. `dmd` plus the event branch, for one, does not fit
-on two 44 GB cards: the branch adds 1.5B trainable parameters on top of DMD's
-two resident networks.
+`train_control_params` in each config says.
 
-| recipe | trainer                        | trains                    |
-|--------|--------------------------------|---------------------------|
-| stage0 | camera_bidirectional_diffusion | adapters + every graft    |
-| stage1 | camera_diffusion               | action, event, action_out |
-| sft    | camera_diffusion               | camera, action            |
-| dmd    | camera_score_distillation      | adapters only             |
+| recipe | trains                |
+|--------|-----------------------|
+| camera | camera (PRoPE)        |
+| action | action in, action out |
+| sft    | camera, action        |
 
-**stage0** is how the bidirectional teacher was made: full attention, no action
-pathway (`use_action: false`), every graft trainable. It is also the only stage
-that trains the camera pathway from scratch.
+**camera** and **action** each train one pathway and leave the other where the
+release left it, which is what makes "did this corpus change camera control?"
+answerable. **sft** trains both together: camera + action refinement on a new
+corpus, 36.1 px of ball bounce against the teacher's 88.8.
 
-**stage1** grafts on the event branch and the action head, and is the only
-stage that supervises the action head at all -- `_action_output_loss` lives in
-`camera_diffusion.py`, so the DMD objective never touches it. A head marked
-trainable under DMD gets `grad is None` every step.
+The action head is supervised by `_action_output_loss` in
+`post_train/objectives/camera_diffusion.py`, and only `action` marks it
+trainable. The recipes that do not train it also do not install it: a frozen
+zero-initialised head returns zeros and has no gradient to give, so charging
+its loss would cost a forward pass and teach nothing.
 
-**sft** is camera + action refinement, and reached the best physics of any
-student here: 36.1 px of ball bounce against the teacher's 88.8, where DMD
-lands at 19-24%. What it cannot give you is few-step sampling.
-
-**dmd** is what buys eight-step sampling, at that cost in physics. It trains
-the adapters only; the grafts stay wherever the earlier stages left them. Three
-terms push back: a motion-preservation term against the clip's own temporal
-difference (worth 10% -> 19% of teacher bounce), rolling forcing every step,
-and a GAN against the residual noise -- a 14M pooled discriminator head on the
-critic.
-
-Read `gan_d_loss`, `d_real` and `d_fake` as the check that the adversarial pair
-is adversarial. `d_loss` pinned at 1.386 -- 2*ln(2), chance exactly -- with
-`d_real` and `d_fake` equal means the discriminator is learning nothing and the
-generator's term is spending two forward passes pushing against it.
+Both keep the backbone frozen and train LoRA adapters plus the named control
+grafts, so the released picture quality is the starting point, not something
+these recipes retrain.
 
 NCCL is the backend. Single node is the default; `--nnodes`/`--node-rank`/
 `--master-addr` extend it across hosts.
@@ -55,14 +41,12 @@ import astronex_env  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 RECIPES = {
-    "stage0": ("stage0_bidir.yaml",
-               "bidirectional teacher: adapters + every graft, no action path"),
-    "stage1": ("stage1_event_action.yaml",
-               "graft on the event branch and the action head"),
-    "sft":    ("sft.yaml",
-               "camera + action refinement; best physics, no few-step sampling"),
-    "dmd":    ("dmd.yaml",
-               "distil to eight steps; adapters only, grafts frozen"),
+    "camera":  ("camera.yaml",
+                "camera (PRoPE) only; the action pathway is left alone"),
+    "action":  ("action.yaml",
+                "action in and out only; the camera pathway is left alone"),
+    "sft":     ("sft.yaml",
+                "camera + action together"),
 }
 
 
@@ -72,10 +56,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="recipes:\n" + "\n".join(
             f"  {k:8s} {d}" for k, (_, d) in RECIPES.items()))
-    ap.add_argument("--recipe", choices=list(RECIPES), default="dmd")
+    ap.add_argument("--recipe", choices=list(RECIPES), default="sft")
     ap.add_argument("--config", default=None,
                     help="explicit config path, overriding --recipe")
     ap.add_argument("--logdir", default=None, help="overrides the config")
+    ap.add_argument("--weights", default=None,
+                    help="checkpoint the \"@weights\" entries resolve to "
+                         "(default: the released directory)")
+    ap.add_argument("--data", default=None,
+                    help="training data, overriding the config's data_path")
     ap.add_argument("--gpus", type=int, default=2, help="processes on this node")
     ap.add_argument("--nnodes", type=int, default=1)
     ap.add_argument("--node-rank", type=int, default=0)
@@ -98,12 +87,21 @@ def main():
     ap.add_argument("--wandb", action="store_true")
     args, passthrough = ap.parse_known_args()
 
-    root = astronex_env.setup()
     config = (os.path.abspath(args.config) if args.config else
               os.path.join(HERE, "configs", RECIPES[args.recipe][0]))
     if not os.path.exists(config):
         raise SystemExit(f"config not found: {config}")
+    weights = os.path.abspath(args.weights) if args.weights else None
+    data = os.path.abspath(args.data) if args.data else None
+    logdir = os.path.abspath(args.logdir) if args.logdir else None
+    root = astronex_env.setup()
     _check_scheme(config, args.recipe)
+    from omegaconf import OmegaConf
+    logdir = logdir or os.path.join(
+        root, str(OmegaConf.load(config).get("logdir", "logs/astronex_post")))
+    config = astronex_env.resolve_config(
+        config, os.path.join(logdir, "_astronex_config.yaml"),
+        weights_dir=weights, data=data)
 
     cmd = [sys.executable, "-m", "torch.distributed.run",
            f"--nnodes={args.nnodes}",
@@ -111,27 +109,20 @@ def main():
            f"--master_addr={args.master_addr}",
            f"--master_port={args.port}",
            f"--nproc_per_node={args.gpus}",
-           "Wan21/wan_train.py",
+           "-m", "post_train.run_train",
            "--config_path", config,
            "--sp_size", str(args.sp_size),
            "--tf", "--allow-small-bsz"]
-    if args.logdir:
-        cmd += ["--logdir", args.logdir]
+    cmd += ["--logdir", logdir]
     cmd += passthrough
 
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(
-        [os.path.join(root, "Wan21"), os.path.join(root, "shared"),
-         env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
-    # Fragmentation, not capacity, is what this run kept dying on: 84 MiB short
-    # with 745 MiB reserved and unallocated.
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    env = astronex_env.child_env(weights or astronex_env.weights())
     if not args.wandb:
         env.setdefault("WANDB_MODE", "disabled")
     if args.memlog:
-        env["MINWM_MEMLOG"] = "1"
+        env["ASTRONEX_MEMLOG"] = "1"
     if args.trainchk:
-        env["MINWM_TRAINCHK"] = "1"
+        env["ASTRONEX_TRAINCHK"] = "1"
     if args.nccl_debug:
         env["NCCL_DEBUG"] = "INFO"
     if args.nnodes > 1:
@@ -141,7 +132,10 @@ def main():
         env.setdefault("NCCL_SOCKET_IFNAME", "^lo,docker")
         env.setdefault("NCCL_IB_DISABLE", "0")
 
-    print(f"[astronex] recipe {args.recipe}: {RECIPES[args.recipe][1]}")
+    if args.config:
+        print(f"[astronex] explicit config (recipe ignored)")
+    else:
+        print(f"[astronex] recipe {args.recipe}: {RECIPES[args.recipe][1]}")
     print(f"[astronex] config {config}")
     print(f"[astronex] {args.nnodes} node(s) x {args.gpus} gpu(s), "
           f"sp_size {args.sp_size}, backend nccl")
@@ -150,10 +144,8 @@ def main():
 
 
 def _check_scheme(config, recipe):
-    """Report which pathways a config trains, and refuse two combinations.
-
-    Both refusals are for settings that read as enabled and are not.
-    """
+    """Report which pathways a config trains, and refuse a combination that
+    reads as enabled and is not."""
     from omegaconf import OmegaConf
 
     cfg = OmegaConf.load(config)
@@ -163,27 +155,13 @@ def _check_scheme(config, recipe):
              (["camera", "action", "action_out", "event", "context"]
               if tcp is True else list(tcp)))
     trainer = str(cfg.get("trainer", "?"))
+    if trainer != "camera_diffusion":
+        raise SystemExit(f"trainer {trainer!r} is not part of this release; "
+                         f"expected camera_diffusion")
 
     print(f"[astronex] trainer {trainer}")
     print("[astronex] control pathways: "
           f"{', '.join(names) or 'none (adapters only)'}")
-
-    # The action-prediction loss (`_action_output_loss`, weighted by
-    # `action_loss_weight`) exists in `camera_diffusion.py` alone. Under any
-    # other trainer the head is marked trainable, handed to the optimiser, and
-    # given `grad is None` every step -- measured here as `action_head: 0 with
-    # a gradient / 6 without`.
-    # Only when the head actually exists. `train_control_params: true` expands
-    # to every marker name, so stage0 nominally asks for action_out -- but it
-    # runs `use_action: false` with no `action_output`, so there is no head for
-    # the marker to match and nothing is being quietly left untrained.
-    head_exists = bool(cfg.model_kwargs.get("action_output", False))
-    if "action_out" in names and head_exists and "camera_diffusion" not in trainer:
-        raise SystemExit(
-            f"action_out has no supervision under {trainer}: the "
-            f"action-prediction loss exists only in camera_diffusion. Use "
-            f"--recipe stage1 or sft, or drop action_out from "
-            f"train_control_params.")
 
     # `split_dtype_fsdp` leaves trainable parameters fp32 and casts the frozen
     # backbone to bf16. LoRA survives that because `LoRALinear.forward` casts

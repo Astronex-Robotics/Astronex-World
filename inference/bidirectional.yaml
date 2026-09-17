@@ -15,8 +15,8 @@ image_or_video_shape:
 - 52
 num_frame_per_block: 4
 model_kwargs:
-  model_name: Wan2.2-TI2V-5B
-  model_root: ckpts/Wan22
+  model_name: transformer
+  model_root: "@weights"
   timestep_shift: 5.0
   use_camera: true
   use_action: true

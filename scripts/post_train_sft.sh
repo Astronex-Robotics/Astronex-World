@@ -1,5 +1,7 @@
 #!/bin/bash
-# Stage "sft" -- see post_train/README.md for what it trains and why.
+# Camera and action together -- see post_train/README.md.
+#
+#   bash scripts/post_train_sft.sh --data <lmdb dir>
 set -e
 # Resolve the interpreter rather than assuming `python` is on PATH: on the
 # machine this was built on it is not, and the failure is a bare
