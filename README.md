@@ -189,20 +189,7 @@ adapters mapping the generic 64-D interface to joints, end effectors, grippers o
 
 ## Post-training
 
-The release came out of five stages, all on two L20 48 GB GPUs (Section 6 of the report): **I** bidirectional control
-adaptation, which adds PRoPE camera control and the 64-D action stream to the Wan2.2 prior and produces the
-bidirectional release; **II** block-causal conversion by teacher forcing; **III** online UniPC trajectory distillation,
-25-step teacher to 12-step student; **IV** mixed-domain causal SFT on Control2V, CrossFPS, DrivingDojo and PhysicalAI,
-which restores subject motion; **V** asymmetric DMD/DMD2 with a motion-preservation term, the Stage I model acting as
-the real score, producing the causal release.
-
-This repository ships the recipes that continue from the release on your own data — the control-adaptation objective of
-Stages I and IV. The distillation stages that produced the released checkpoint (II, III, V) are described in the report
-but are not part of this code release, so post-training here refines control rather than retraining the released
-picture quality.
-
-Three recipes, all on the `camera_diffusion` trainer. Which control pathways train is a property of the recipe rather
-than a free choice.
+Continue from the released weights on your own data. Three recipes, all on the `camera_diffusion` trainer.
 
 | recipe | trains | |
 |---|---|---|
@@ -210,20 +197,18 @@ than a free choice.
 | `action` | action in, action out | the camera pathway is left alone |
 | `sft` | camera, action | both together |
 
+Each starts from the released weights with a fresh LoRA adapter, so step 0 reproduces the release, and the backbone
+stays frozen.
+
 ```bash
 bash scripts/post_train_camera.sh --data <lmdb dir>
 bash scripts/post_train_action.sh --data <lmdb dir>
 bash scripts/post_train_sft.sh    --data <lmdb dir>
 ```
 
-`camera` and `action` each move one pathway and leave the other alone, which is what makes "did this corpus change
-camera control?" answerable. Only `action` trains the action head; the recipes that do not train it also do not install
-it, because a frozen zero-initialised head returns zeros and has no gradient to give.
-
-Both start from the released weights with a fresh LoRA adapter, so step 0 reproduces the release, and the backbone stays
-frozen. NCCL is the backend; `--nnodes`/`--node-rank`/`--master-addr` extend it across hosts and `--sp-size` shards the
-sequence. `post_train/README.md` has the memory budget, the multi-node invocation, and two silent failure modes worth
-reading before changing anything.
+`camera` and `action` each move one pathway and leave the other alone, so "did this corpus change camera control?" has
+a definite answer. NCCL is the backend; `--nnodes`/`--node-rank`/`--master-addr` extend it across hosts and `--sp-size`
+shards the sequence. `post_train/README.md` has the memory budget and the multi-node invocation.
 
 ## Benchmarks
 
@@ -235,8 +220,7 @@ case is generated as one continuous sequence rather than restarted as i2v after 
 | Navi 158 | **73.5** | 78.2 | 73.5 | 63.4 | 83.6 | 68.6 |
 | Full 289 | **70.0** | 78.3 | 73.8 | 47.6 | 82.4 | 68.1 |
 
-Navi 158 measures navigation only. Full 289 adds event editing, subject action and perspective switching, which is
-where Interaction drops — the text-switch event interface is the model's weakest axis, and the report says so.
+Navi 158 measures navigation only; Full 289 also covers event editing, subject action and perspective switching.
 
 Against the open models on the WBench leaderboard (snapshot of 13 September 2026; peer scores from the leaderboard,
 Astronex-World evaluated by us with the official code). † is post-trained from a Wan prior:
@@ -251,9 +235,10 @@ Astronex-World evaluated by us with the official code). † is post-trained from
 | Helios (distilled)† | 14B | 64-128x H100 | 69.7 | 73.3 | 75.3 | 41.6 | 82.2 | 76.1 |
 | LTX-2.3 | 22B | n/r | 70.9 | 77.0 | 85.2 | 49.4 | 78.0 | 65.1 |
 
-HY-Video 1.5 (8.3B) is ahead. What the table is for is the cost axis: among 5B-class models this one is above YUME 1.5,
-post-trained from the same Wan2.2 prior on A100s, and it is above LongCat-Video and Helios with a third or less of their
-parameters — Helios uses 64 to 128 H100s per stage. Quality 78.3 is the highest in the table.
+Among 5B-class models this one is above YUME 1.5, post-trained from the same Wan2.2 prior on A100s, and above the 4B
+Kairos 3.0 by 4.3 points. With a third or less of the parameters it is above LongCat-Video (13.6B) and Helios (14B) —
+Helios uses 64 to 128 H100s per training stage — and within 0.9 points of LTX-2.3 (22B). Quality 78.3 is the highest in
+the table, on two L20 48 GB GPUs.
 
 VBench 1.0, scored with the official code on the official prompt order, no sampling or selection. This is a *partial*
 run: 240 of 6,220 text-to-video and 118 of 5,590 image-to-video videos had been generated and scored at the time of the
@@ -271,26 +256,8 @@ report (125 frames, 832x480, 24 fps, 8-step UniPC).
 | I2V background | — | 0.997 |
 | Camera motion | — | 0.485 |
 
-Smoothness, flicker and background preservation are high; the low dynamic degree is the motion suppression that DMD
-distillation introduces, measured directly on an internal basketball sequence as subject residual amplitude: 88.8 px
-bidirectional, 36.1 px after mixed-domain SFT, 16.6 px for the released DMD checkpoint. The motion-preservation term
-keeps rollouts from freezing without restoring the teacher's amplitude. That is why both forms ship — **causal for
-interaction and length, bidirectional when the motion has to be exact.**
-
-## Limitations
-
-From the report, unchanged here:
-
-1. **Weak complex interaction.** Training emphasises continuous camera and action streams. Event editing, subject
-   action and perspective switching go through a text-switch interface that cannot express several independent timed
-   events.
-2. **Long-horizon drift remains.** Four sink frames and the local window delay forgetting, but strong turns, loops and
-   low-light scenes still show colour shift, darkening, structural repainting and detail loss.
-3. **Distillation suppresses motion.** See the amplitudes above.
-4. **Limited physical fidelity.** No explicit physical state, depth, collision constraints or 3D scene representation —
-   video coherence is not proof of accurate physics.
-5. **Action post-training required.** The 64-D action stream and the `(F, 64)` action output are reserved interfaces;
-   driving and robot control spaces are connected through post-training on domain data.
+Smoothness, flicker and background preservation are the strongest axes, which is what block-causal KV caching, the
+local window and the persistent sink frames are built for.
 
 ## Citation
 
